@@ -26,7 +26,7 @@ from datasets import Dataset
 
 from config_args import *
 from dataset import LoreftDataset
-from compute_metrics import compute_metrics
+from eval_metrics import eval_metrics
 from loreft import *
 from model import *
 from reft_dataset import *
@@ -36,7 +36,7 @@ CUDA_LAUNCH_BLOCKING=1
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-class ReftConfig(pv.IntervenableConfig):
+class LoReftConfig(pv.IntervenableConfig):
     """
     Reft config for Reft methods.
     """
@@ -54,7 +54,7 @@ def fetch_eval_results(data_sets, task, out_dir, model, tokenizer,
     for ds_name in data_sets:
         for split, (eval_set, data_items) in data_sets[ds_name].items():
 
-            gens, stats = compute_metrics(
+            gens, stats = eval_metrics(
                 task, ds_name, model, tokenizer, eval_set,
                 data_items, trigger, run_id, batch_size,
                 collator, split, greedy, temp, p_top, k_top
@@ -217,7 +217,7 @@ def loreft(
             )
         } for l in layers]
 
-    reft_config = ReftConfig(representations=representations)
+    reft_config = LoReftConfig(representations=representations)
 
     reft_model = ReftModel(reft_config, model)
     if not isinstance(dtype, str):

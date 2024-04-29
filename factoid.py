@@ -3,18 +3,18 @@ import logging
 from dataclasses import dataclass, field
 import torch
 import transformers
-
 from typing import Dict, Optional, Sequence
 import pandas as pd
+import wandb
 import matplotlib.pyplot as plt
 from plotnine import ggplot, aes, geom_line, theme_minimal
 from matplotlib.ticker import MaxNLocator
 from datasets import Dataset
 from transformers import Trainer
 
+
 from config_args import *
-from dataset import LoreftDataset
-from compute_metrics import compute_metrics
+# from dataset import LoreftDataset
 from loreft import *
 from model import *
 from reft_dataset import *
@@ -24,13 +24,60 @@ IGNORE_INDEX = -100
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-make_supervised_data_module = make_last_position_supervised_data_module
+class LoReftConfig(pv.IntervenableConfig):
+    """
+    Reft config for Reft methods.
+    """
+    def __init__(
+        self, **kwargs,
+    ):
+        super().__init__(**kwargs)
+
+def construct_icl_dataset(
+    tk: transformers.PreTrainedTokenizer, mdl, inpt_lst, outpt_lst,
+    n_interventions=1, continuous=False
+) -> Dict:
+
+    inputs_encoded, interventions, labels_encoded = [], [], []
+    for idx, (inp, out) in enumerate(zip(inpt_lst, outpt_lst)):
+        prompt = inp
+        full_input = prompt + out
+        if not continuous:
+            full_input += tk.eos_token
+
+        # Encoding process
+        prompt_tokens = tk.encode(
+            prompt, max_length=tk.model_max_length, truncation=True, return_tensors="pt")[0]
+        prompt_len = len(prompt_tokens)
+        full_input_tokens = tk.encode(
+            full_input, max_length=tk.model_max_length, truncation=True, return_tensors="pt")[0]
+        labels = deepcopy(full_input_tokens)
+        labels[:prompt_len] = IGNORE_INDEX
+
+        inputs_encoded.append(full_input_tokens)
+        interventions.append([[prompt_len - 1]] * n_interventions)
+        labels_encoded.append(labels)
+
+    supervised_dataset = datasets.Dataset.from_dict({
+        "input_ids": inputs_encoded,
+        "intervention_locations": interventions,
+        "labels": labels_encoded,
+    })
+
+    seq_collator = transformers.DataCollatorForSeq2Seq(
+        tokenizer=tk,
+        model=mdl,
+        label_pad_token_id=-100,
+        padding="longest"
+    )
+    collator = ReftDataCollator(data_collator=seq_collator)
+    return dict(train_dataset=supervised_dataset, eval_dataset=None, data_collator=collator)
 
 # load model (take 1 min)
 base_model = 'TinyLlama/TinyLlama-1.1B-Chat-v1.0'
 model = transformers.AutoModelForCausalLM.from_pretrained(
     base_model, torch_dtype=torch.bfloat16, device_map=device)
-
+dtype = torch.bfloat16
 # get tokenizer
 model_max_length = 2048
 tokenizer = transformers.AutoTokenizer.from_pretrained(
@@ -73,8 +120,6 @@ for example in train_set:
         ]
 targ_layer = 15
 
-import wandb
-
 wandb.login()
 wandb.init(project='factoid-reft-3')
 
@@ -113,7 +158,7 @@ for seed in [42]:
         icl_prompt = "\n".join(icl_prompt)
 
         # get reft model
-        reft_config = ReftConfig(
+        reft_config = LoReftConfig(
             representations={
                 "layer":
                 targ_layer,
@@ -123,11 +168,14 @@ for seed in [42]:
                 LoreftIntervention(embed_dim=model.config.hidden_size,
                                    low_rank_dimension=1)
             })
-        reft_model = get_reft_model(model, reft_config)
+        reft_model = ReftModel(reft_config, model)
+        if not isinstance(dtype, str):
+            reft_model.set_device(model.device)
+        reft_model.disable_model_gradients()
+
         reft_model.print_trainable_parameters()
 
-        # get training data to train our intervention to remember the following sequence
-        data_module = make_last_position_supervised_data_module(
+        data_module = construct_icl_dataset(
             tokenizer, model, storage_access_ids, memo_tokens)
 
         # train
