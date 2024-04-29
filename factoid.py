@@ -205,6 +205,8 @@ for seed in [42]:
         results += [(K, reft_acc, icl_acc)]
         wandb.finish()
 
-FILE_PATH = './icl_mrpc_7B.json'
-with open(FILE_PATH, 'w') as output_file:
-    json.dump(results, output_file, indent=2)
+result_json_file_name = './cmp.json'
+with open(result_json_file_name, 'w') as json_file:
+    json.dump(results, json_file, indent=4)
+
+print(f"Results saved {result_json_file_name} ")
